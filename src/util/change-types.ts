@@ -19,8 +19,15 @@ export const changeStationType = (
 ) => {
     const currentStnType = graph.getNodeAttribute(selectedFirst, 'type') as StationType;
     const names = graph.getNodeAttribute(selectedFirst, currentStnType)!.names;
+    let newAttrs = { ...stations[newStnType].defaultAttrs, names };
+    if (!Object.values(AttrsInvalid).includes(currentStnType) || !Object.values(AttrsInvalid).includes(newStnType)) {
+        newAttrs = { ...stations[newStnType].defaultAttrs, names };
+        //@ts-expect-error
+        newAttrs.nameOffsetX = graph.getNodeAttribute(selectedFirst, currentStnType)!.nameOffsetX;
+        //@ts-expect-error
+        newAttrs.nameOffsetY = graph.getNodeAttribute(selectedFirst, currentStnType)!.nameOffsetY;
+    }
     graph.removeNodeAttribute(selectedFirst, currentStnType);
-    const newAttrs = { ...stations[newStnType].defaultAttrs, names };
     graph.mergeNodeAttributes(selectedFirst, { type: newStnType, [newStnType]: newAttrs });
 };
 
