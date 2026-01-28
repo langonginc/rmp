@@ -77,19 +77,19 @@ export const generateAnimationSequence = (
 };
 
 /**
- * Creates an SVG element with only the specified nodes and edges visible.
+ * Creates an SVG element with a wipe effect that reveals content from left to right.
  * Used to generate individual frames for the animation.
  */
 const createFrameSVG = async (
     graph: MultiDirectedGraph<NodeAttributes, EdgeAttributes, GraphAttributes>,
-    visibleNodes: Set<NodeId>,
-    visibleEdges: Set<LineId>,
-    edgeProgress: Map<LineId, number>, // 0 to 1, representing how much of the edge is drawn
+    wipeProgress: number, // 0 to 1, representing how far the wipe has progressed
+    xMin: number,
+    xMax: number,
     isSystemFontsOnly: boolean,
     languages: TextLanguage[],
     existsNodeTypes: Set<any>
 ): Promise<{ elem: SVGSVGElement; width: number; height: number }> => {
-    // Create the base SVG element from the current graph
+    // Create the complete SVG element with all nodes and edges
     const { elem, width, height } = await makeRenderReadySVGElement(
         graph,
         false, // don't generate RMP info
@@ -99,40 +99,40 @@ const createFrameSVG = async (
         2 // SVG version 2
     );
 
-    // Hide nodes that shouldn't be visible yet by removing them from the DOM
-    graph.forEachNode(node => {
-        if (!visibleNodes.has(node as NodeId)) {
-            const nodeElem = elem.getElementById(node);
-            if (nodeElem) {
-                nodeElem.remove();
-            }
+    // Apply wipe effect using clip-path
+    // Calculate the current reveal position based on progress
+    const revealX = xMin + (xMax - xMin) * wipeProgress;
+
+    // Create a clip-path that reveals content from left to the reveal position
+    const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+    clipPath.id = 'wipe-clip';
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', xMin.toString());
+    rect.setAttribute('y', '-999999'); // Large enough to cover all content vertically
+    rect.setAttribute('width', (revealX - xMin).toString());
+    rect.setAttribute('height', '1999998'); // Large enough to cover all content vertically
+
+    clipPath.appendChild(rect);
+
+    // Add the clip-path definition to the SVG
+    const defs =
+        elem.querySelector('defs') ||
+        elem.insertBefore(document.createElementNS('http://www.w3.org/2000/svg', 'defs'), elem.firstChild);
+    defs.appendChild(clipPath);
+
+    // Apply the clip-path to the entire SVG content (wrap in a group if needed)
+    // Find or create a main group to apply clipping to
+    let mainGroup = elem.querySelector('g');
+    if (!mainGroup) {
+        mainGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        // Move all children into the group
+        while (elem.firstChild && elem.firstChild !== defs) {
+            mainGroup.appendChild(elem.firstChild);
         }
-    });
-
-    // Hide edges that shouldn't be visible yet and apply progress to visible ones
-    graph.forEachEdge(edge => {
-        const edgeId = edge as LineId;
-        const edgeElem = elem.getElementById(edgeId);
-
-        if (!edgeElem) return;
-
-        if (!visibleEdges.has(edgeId)) {
-            // Edge not visible yet, remove it
-            edgeElem.remove();
-        } else {
-            // Edge is visible, apply progress animation
-            const progress = edgeProgress.get(edgeId) || 1;
-            if (progress < 1) {
-                const pathElem = edgeElem.querySelector('path');
-                if (pathElem) {
-                    const totalLength = pathElem.getTotalLength();
-                    const dashLength = totalLength * progress;
-                    pathElem.setAttribute('stroke-dasharray', `${dashLength} ${totalLength}`);
-                    pathElem.setAttribute('stroke-dashoffset', '0');
-                }
-            }
-        }
-    });
+        elem.appendChild(mainGroup);
+    }
+    mainGroup.setAttribute('clip-path', 'url(#wipe-clip)');
 
     return { elem, width, height };
 };
@@ -179,7 +179,7 @@ const renderSVGToCanvas = async (
 
 /**
  * Exports the graph as an animated video file (WebM format).
- * Animates nodes appearing in sequence, followed by edges drawing progressively.
+ * Uses a wipe effect to reveal the complete map from left to right.
  */
 export const exportVideo = async (
     graph: MultiDirectedGraph<NodeAttributes, EdgeAttributes, GraphAttributes>,
@@ -191,31 +191,20 @@ export const exportVideo = async (
 ): Promise<Blob> => {
     const { fps, duration, isTransparent, scale, isSystemFontsOnly, quality } = options;
 
-    // Generate animation sequence
-    const sequence = generateAnimationSequence(graph);
+    // Calculate the bounding box of all elements for the wipe effect
+    const positions: number[] = [];
+    graph.forEachNode((node, attr) => {
+        positions.push(attr.x);
+    });
 
-    // Validate that we have something to animate
-    if (sequence.nodes.length === 0) {
+    if (positions.length === 0) {
         throw new Error('No nodes to animate');
     }
 
+    const xMin = Math.min(...positions);
+    const xMax = Math.max(...positions);
+
     const totalFrames = Math.floor(fps * duration);
-
-    // Calculate timing
-    const nodeFrames = Math.floor(totalFrames * NODE_ANIMATION_RATIO);
-    const edgeFrames = totalFrames - nodeFrames;
-    const framesPerNode = sequence.nodes.length > 0 ? nodeFrames / sequence.nodes.length : 0;
-
-    // For edges, calculate start frame and duration for each edge
-    // Each edge gets MIN_FRAMES_PER_EDGE frames, and they can overlap
-    const edgeAnimations = new Map<LineId, { startFrame: number; duration: number }>();
-    sequence.edges.forEach((edge, index) => {
-        const startFrame = nodeFrames + Math.floor(index * EDGE_STAGGER_FRAMES);
-        edgeAnimations.set(edge, {
-            startFrame,
-            duration: MIN_FRAMES_PER_EDGE,
-        });
-    });
 
     // Initialize video writer
     const videoWriter = new WebMWriter({
@@ -224,48 +213,17 @@ export const exportVideo = async (
         transparent: isTransparent,
     });
 
-    // Generate frames
-    const visibleNodes = new Set<NodeId>();
-    const visibleEdges = new Set<LineId>();
-    const edgeProgress = new Map<LineId, number>();
-
+    // Generate frames with wipe effect
     for (let frame = 0; frame < totalFrames; frame++) {
-        // Determine which nodes should be visible
-        const currentNodeIndex = Math.floor(frame / framesPerNode);
-        for (let i = 0; i <= currentNodeIndex && i < sequence.nodes.length; i++) {
-            visibleNodes.add(sequence.nodes[i]);
-        }
+        // Calculate wipe progress (0 to 1)
+        const wipeProgress = frame / (totalFrames - 1);
 
-        // Clear edge progress for this frame
-        edgeProgress.clear();
-        visibleEdges.clear();
-
-        // Determine which edges should be visible and their progress
-        sequence.edges.forEach((edge, index) => {
-            const animation = edgeAnimations.get(edge)!;
-            const framesSinceStart = frame - animation.startFrame;
-
-            if (framesSinceStart >= 0) {
-                // Edge animation has started
-                visibleEdges.add(edge);
-
-                if (framesSinceStart >= animation.duration) {
-                    // Animation complete
-                    edgeProgress.set(edge, 1);
-                } else {
-                    // Animation in progress - smooth linear interpolation
-                    const progress = framesSinceStart / animation.duration;
-                    edgeProgress.set(edge, progress);
-                }
-            }
-        });
-
-        // Create frame SVG
+        // Create frame SVG with wipe effect
         const { elem, width, height } = await createFrameSVG(
             graph,
-            visibleNodes,
-            visibleEdges,
-            edgeProgress,
+            wipeProgress,
+            xMin,
+            xMax,
             isSystemFontsOnly,
             languages,
             existsNodeTypes
