@@ -22,6 +22,8 @@ export interface AnimationSequence {
 const NODE_ANIMATION_RATIO = 0.3; // 30% of animation time for nodes appearing
 const EDGE_ANIMATION_RATIO = 0.7; // 70% of animation time for edges drawing
 const HORIZONTAL_GROUPING_THRESHOLD = 50; // Threshold for grouping nodes horizontally
+const MIN_FRAMES_PER_EDGE = 20; // Minimum frames for smooth edge animation
+const EDGE_STAGGER_FRAMES = 3; // Frames to wait before starting next edge
 
 /**
  * Determines the order in which nodes and edges should be animated.
@@ -203,7 +205,17 @@ export const exportVideo = async (
     const nodeFrames = Math.floor(totalFrames * NODE_ANIMATION_RATIO);
     const edgeFrames = totalFrames - nodeFrames;
     const framesPerNode = sequence.nodes.length > 0 ? nodeFrames / sequence.nodes.length : 0;
-    const framesPerEdge = sequence.edges.length > 0 ? edgeFrames / sequence.edges.length : 0;
+
+    // For edges, calculate start frame and duration for each edge
+    // Each edge gets MIN_FRAMES_PER_EDGE frames, and they can overlap
+    const edgeAnimations = new Map<LineId, { startFrame: number; duration: number }>();
+    sequence.edges.forEach((edge, index) => {
+        const startFrame = nodeFrames + Math.floor(index * EDGE_STAGGER_FRAMES);
+        edgeAnimations.set(edge, {
+            startFrame,
+            duration: MIN_FRAMES_PER_EDGE,
+        });
+    });
 
     // Initialize video writer
     const videoWriter = new WebMWriter({
@@ -224,28 +236,29 @@ export const exportVideo = async (
             visibleNodes.add(sequence.nodes[i]);
         }
 
+        // Clear edge progress for this frame
+        edgeProgress.clear();
+        visibleEdges.clear();
+
         // Determine which edges should be visible and their progress
-        if (frame >= nodeFrames && sequence.edges.length > 0) {
-            const edgeFrame = frame - nodeFrames;
-            const currentEdgeIndex = Math.floor(edgeFrame / framesPerEdge);
+        sequence.edges.forEach((edge, index) => {
+            const animation = edgeAnimations.get(edge)!;
+            const framesSinceStart = frame - animation.startFrame;
 
-            // Add completed edges
-            for (let i = 0; i < currentEdgeIndex && i < sequence.edges.length; i++) {
-                const edge = sequence.edges[i];
-                if (!visibleEdges.has(edge)) {
-                    visibleEdges.add(edge);
-                }
-                edgeProgress.set(edge, 1);
-            }
-
-            // Add current edge with progress
-            if (currentEdgeIndex < sequence.edges.length) {
-                const edge = sequence.edges[currentEdgeIndex];
+            if (framesSinceStart >= 0) {
+                // Edge animation has started
                 visibleEdges.add(edge);
-                const progress = (edgeFrame % framesPerEdge) / framesPerEdge;
-                edgeProgress.set(edge, progress);
+
+                if (framesSinceStart >= animation.duration) {
+                    // Animation complete
+                    edgeProgress.set(edge, 1);
+                } else {
+                    // Animation in progress - smooth linear interpolation
+                    const progress = framesSinceStart / animation.duration;
+                    edgeProgress.set(edge, progress);
+                }
             }
-        }
+        });
 
         // Create frame SVG
         const { elem, width, height } = await createFrameSVG(
