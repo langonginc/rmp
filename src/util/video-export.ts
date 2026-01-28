@@ -116,23 +116,25 @@ const createFrameSVG = async (
     clipPath.appendChild(rect);
 
     // Add the clip-path definition to the SVG
-    const defs =
-        elem.querySelector('defs') ||
-        elem.insertBefore(document.createElementNS('http://www.w3.org/2000/svg', 'defs'), elem.firstChild);
+    let defs = elem.querySelector('defs');
+    if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        elem.insertBefore(defs, elem.firstChild);
+    }
     defs.appendChild(clipPath);
 
-    // Apply the clip-path to the entire SVG content (wrap in a group if needed)
-    // Find or create a main group to apply clipping to
-    let mainGroup = elem.querySelector('g');
-    if (!mainGroup) {
-        mainGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        // Move all children into the group
-        while (elem.firstChild && elem.firstChild !== defs) {
-            mainGroup.appendChild(elem.firstChild);
+    // Wrap all non-defs children in a group to apply the clip-path
+    const wrapperGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    wrapperGroup.setAttribute('clip-path', 'url(#wipe-clip)');
+
+    // Move all children except defs into the wrapper group
+    const children = Array.from(elem.childNodes);
+    for (const child of children) {
+        if (child !== defs) {
+            wrapperGroup.appendChild(child);
         }
-        elem.appendChild(mainGroup);
     }
-    mainGroup.setAttribute('clip-path', 'url(#wipe-clip)');
+    elem.appendChild(wrapperGroup);
 
     return { elem, width, height };
 };
@@ -216,7 +218,8 @@ export const exportVideo = async (
     // Generate frames with wipe effect
     for (let frame = 0; frame < totalFrames; frame++) {
         // Calculate wipe progress (0 to 1)
-        const wipeProgress = frame / (totalFrames - 1);
+        // Handle edge case: if only 1 frame, progress should be 1
+        const wipeProgress = totalFrames <= 1 ? 1 : frame / (totalFrames - 1);
 
         // Create frame SVG with wipe effect
         const { elem, width, height } = await createFrameSVG(
